@@ -1,0 +1,12 @@
+# --- never commit: secrets and per-cluster private material (see DESIGN.md §5.1) ---
+.env
+certs/
+# --- runtime state (DATA_ROOT when it is inside this directory) ---
+data/
+# --- superseded local working copies and device-specific notes ---
+rev2/
+POC-MAC-NOTES.md
+*.tgz
+*.ids
+# --- OS noise ---
+.DS_Store
