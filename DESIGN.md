@@ -161,7 +161,9 @@ do not show a necessity to adjust the PostgreSQL configuration.
   read the key.
 * **To change `HOST_IP`**, for example to move the stack to a different host, you do not
   change the CA. Caddy makes the server certificates again. Make the two OAuth2 redirect
-  addresses in Gitea again. Refer to section 7, step 6. Then tell the users the new address.
+  addresses in Gitea again. Refer to section 7, step 6. WARNING: That procedure makes a new
+  client secret for each application. Write the two new secrets in the .env file, then run
+  `docker compose up -d`. Then tell the users the new address.
 * **There is no HTTP service.** Caddy gives the error 400 for an HTTP request to a TLS port.
   The SSH port is the only port without TLS.
 
@@ -850,6 +852,11 @@ mkapp Vikunja "https://$HOST_IP:$VIKUNJA_PORT/auth/openid/gitea" | python3 -c \
   'import json,sys;a=json.load(sys.stdin);print(f"VIKUNJA_OIDC_CLIENT_ID={a[\"client_id\"]}\nVIKUNJA_OIDC_CLIENT_SECRET={a[\"client_secret\"]}")'
 #    Copy the four lines into the .env file. WARNING: Gitea shows each client secret one
 #    time only. Then start the other containers:
+#
+#    WARNING: If you change an application later with a PATCH command, Gitea makes a new
+#    client secret. The client ID stays the same. Get the new secret from the reply, write
+#    it in the .env file, then run `docker compose up -d` again. This applies when you
+#    change a redirect address, for example after a change of HOST_IP or of a port.
 docker compose up -d
 
 # Step 7. Do the tests in section 8.
@@ -919,7 +926,8 @@ docker compose logs --tail=60 gitea outline vikunja caddy
 Do these checks manually and record the result:
 
 1. In Outline, select "Continue with Gitea". Does the first login make the workspace? Does
-   an installation page come first?
+   an installation page come first? If you see an authentication error, examine the Outline
+   log for the message "invalid client secret". Refer to section 9.2.
 2. In Vikunja, select "Log in with Gitea". Does Vikunja make the user account with the
    correct name and the correct email address?
 3. Upload an attachment in Outline. Upload an attachment in Vikunja.
@@ -980,6 +988,13 @@ needs a native Linux daemon.
   `redirect_uris[]` and `confidential_client:true`. You can change it with `PATCH …/{id}`.
   Both commands operate with basic authentication. The API has no command for an application
   at the level of the server.
+* **WARNING: A `PATCH` command makes a new client secret.** The client ID does not change,
+  but the old secret stops. The reply to the `PATCH` command contains the new secret. Write
+  that new secret in the .env file. Then run `docker compose up -d` to make the containers
+  again. If you do not do this, the login gives the message "invalid client secret" in the
+  Outline log. The user sees an authentication error. The Vikunja provider list stays
+  correct in this condition, because that list comes from the discovery file and not from
+  the secret.
 * The container registry gives the code 401 for `GET /v2/` through Caddy. The reply has the
   header `Www-Authenticate: Bearer realm="https://HOST_IP:8082/v2/token"`.
 
