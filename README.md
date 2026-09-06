@@ -1,67 +1,94 @@
 # Self-hosted developer workspace
 
-Git hosting with a package registry and CI, a wiki, and task tracking — behind **one login** and
-**one private CA**, on a single small machine. **100 % free and open source.**
+This stack gives a small team a git server, a wiki and a task tracker. The git server also
+has a package registry and a CI function. A user logs in one time and can then use all
+three applications. One private CA gives the TLS certificates. All of the software is free
+and open source.
 
-Runs in either of two profiles from the same compose file: **isolated**, with no outbound access at runtime,
-or **connected**. Sized for roughly 4 cores and 8 GB; the whole stack idles at **~540 MB**.
+The stack operates in two profiles. The **isolated** profile makes no external connection.
+The **connected** profile permits external connections. One compose file gives both
+profiles. The stack needs approximately 4 processor cores and 8 GB of memory. When the
+stack is idle, it uses approximately 540 MB.
 
-| Component | Image | Role |
+| Component | Image | Function |
 |---|---|---|
-| [Caddy](https://caddyserver.com) | `caddy:2.10.2-alpine` | TLS entry point; signs every certificate from your own root CA |
-| [Gitea](https://about.gitea.com) | `gitea/gitea:1.26` | git, LFS, package registry, Actions — **and the OIDC provider** |
-| [Outline](https://www.getoutline.com) | `outlinewiki/outline:1.8.0` | wiki, local file storage |
-| [Vikunja](https://vikunja.io) | `vikunja/vikunja:2.3.0` | tasks / kanban / gantt |
-| [PostgreSQL](https://www.postgresql.org) | `postgres:16-alpine` | shared database, one role + database per app |
-| [Valkey](https://valkey.io) | `valkey/valkey:8.1-alpine` | Outline queues, pub/sub, collaboration state |
+| [Caddy](https://caddyserver.com) | `caddy:2.10.2-alpine` | Receives each HTTP request. Makes the TLS certificates from your root CA. |
+| [Gitea](https://about.gitea.com) | `gitea/gitea:1.26` | Gives git, LFS, the package registry, Actions and the OIDC provider. |
+| [Outline](https://www.getoutline.com) | `outlinewiki/outline:1.8.0` | Gives the wiki. Keeps the files on a local disk. |
+| [Vikunja](https://vikunja.io) | `vikunja/vikunja:2.3.0` | Gives the tasks, the kanban boards and the gantt charts. |
+| [PostgreSQL](https://www.postgresql.org) | `postgres:16-alpine` | Gives the database. Each application has one role and one database. |
+| [Valkey](https://valkey.io) | `valkey/valkey:8.1-alpine` | Gives the queues, the messages and the collaboration data for Outline. |
 
-## Design principles
+## Design rules
 
-- **Isolation is a setting, not a fork.** One line in `.env` picks the profile. In `isolated` there are no
-  outbound calls at runtime: update checks are off, Actions resolve from this instance, and images arrive by
-  `docker save` / `docker load` verified by image ID, because digests do not survive that round trip.
-  In `connected`, images pull normally and Actions resolve upstream. Mailers are off in both.
-- **One identity.** Gitea's built-in OIDC provider authenticates Outline and Vikunja. Users exist only in Gitea.
-  No Keycloak, Authelia or Authentik.
-- **One private CA.** Caddy terminates TLS for all three apps and signs from a root you generate once, constrained
-  to your LAN subnet. Clients trust one certificate; `docker push` and `git` over https work without
-  `insecure-registries`. TLS is not optional here: Outline refuses OIDC login over plain HTTP. This holds in both
-  profiles, since the services are reached by LAN address and have no publicly resolvable name.
-- **Least privilege in the database.** Each app gets its own role and database, created on first boot; nothing
-  connects as the superuser.
-- **No secrets in this repository.** Every sensitive value is a `${VAR}` read from an untracked `.env`.
+- **The profile is a setting, not a different version.** One line in the .env file selects
+  the profile. In the isolated profile the stack makes no external connection. Update
+  checks are off. Actions come from this Gitea server. You move the images with the
+  commands `docker save` and `docker load`, then examine each image by its image ID.
+  A digest does not stay correct after these two commands. In the connected profile,
+  Docker pulls the images and Actions can come from an external server. The mail function
+  is off in both profiles.
+- **One identity provider.** Gitea has an OIDC provider. Outline and Vikunja use it. You
+  make all user accounts in Gitea. This stack does not include Keycloak, Authelia or
+  Authentik.
+- **One private CA.** Caddy gives TLS to the three applications. You make the root
+  certificate one time. A name constraint limits the root certificate to your local
+  network. Each client trusts this one certificate. Then the commands `docker push` and
+  `git` operate with HTTPS and do not need the option insecure-registries. TLS is
+  necessary, because Outline refuses an OIDC login on an HTTP connection. Both profiles
+  use a private CA, because the applications have no public name.
+- **Minimum permissions in the database.** Each application has its own role and its own
+  database. PostgreSQL makes them at the first start. No application connects as the
+  superuser.
+- **No secret values in this repository.** Each secret is a variable. The compose file
+  reads the variables from the .env file, and that file stays on your machine.
 
-## Quick start
+## Procedure to start
 
 ```bash
-git clone <this repo> && cd <this repo>
-cp env.example .env && chmod 600 .env
-# set DEPLOYMENT_PROFILE, HOST_IP, DATA_ROOT and TZ, then generate the secrets
+git clone <this repository>
+cd <the new directory>
+cp env.example .env
+chmod 600 .env
 ```
 
-Then follow the runbook in **[DESIGN.md](DESIGN.md) §7** — it covers
-generating the root CA, creating the data directories, bootstrapping the Gitea admin, registering the two OAuth2
-clients, and distributing the CA to client machines.
+Write your values in the .env file. Set DEPLOYMENT_PROFILE, HOST_IP, DATA_ROOT and TZ.
+Then make the secret values. Then do the steps in section 7 of [DESIGN.md](DESIGN.md).
+That section has these procedures:
+
+1. Make the root CA.
+2. Make the data directories.
+3. Make the first Gitea administrator.
+4. Make the two OAuth2 clients.
+5. Give the root certificate to each client machine.
 
 ## Documentation
 
-[DESIGN.md](DESIGN.md) is the single source of truth: goals and
-constraints, every design decision with its reasoning, the network and trust model, all four files reproduced
-verbatim, the deployment runbook, a validation checklist, and an explicit list of what has been verified by
-running the stack versus what is still assumed.
+[DESIGN.md](DESIGN.md) is the primary document. It has these parts:
 
-## Secrets and per-cluster state
+- The goals and the limits.
+- Each design decision and its reason.
+- The network and trust model.
+- The four configuration files.
+- The deployment runbook and a test list.
+- A list of the verified items and a list of the open items.
 
-`.env`, `certs/` and the runtime data directory are excluded by [.gitignore](.gitignore) and must never be
-committed. To reuse this repository across several clusters while keeping their secrets, encrypt them per cluster
-with [age](https://github.com/FiloSottile/age) and commit only the ciphertext — see §5.1 of the design document.
+## Secret values and data
 
-## Status
+The .gitignore file excludes the .env file, the certs directory and the data directory.
+Do not commit these files.
 
-Verified end to end on a reference host: TLS chain, OIDC plumbing, database provisioning and health endpoints all
-confirmed by running the stack. Browser logins, attachment uploads and registry pushes are not yet exercised.
-§9 of the design document records exactly what was observed and §10 lists every open item.
+To use this repository for more than one installation, encrypt the secret values of each
+installation with [age](https://github.com/FiloSottile/age). Commit only the encrypted
+files. Section 5.1 of the design document gives the commands.
+
+## Condition of this stack
+
+A test host ran the full stack. These items are verified: the TLS chain, the OIDC
+configuration, the database roles and databases, and the health addresses. These items are
+not verified: a login from a browser, a file upload, and a push to the container registry.
+Section 9 of the design document lists each verified item. Section 10 lists each open item.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. Refer to the [LICENSE](LICENSE) file.

@@ -1,39 +1,55 @@
-# Self-hosted developer workspace — Revision 3
-#   Caddy (TLS, private CA) in front of
-#   Outline (wiki) + Gitea (git, packages, actions, OIDC provider) + Vikunja (tasks)
-#   on one shared PostgreSQL and one shared Valkey.
+# Self-hosted developer workspace. Revision 3.
 #
-# Companion files (same directory): .env (copy env.example), init.sql, Caddyfile,
-#                                   certs/root.crt + certs/root.key (generated once, see runbook)
+# This stack has five applications. Caddy gives TLS to the three web applications.
+# Outline is the wiki. Gitea gives git, packages, actions and OIDC. Vikunja gives tasks.
+# All three applications use one PostgreSQL server and one Valkey server.
 #
-# Authentication: Gitea is the single identity provider. Outline and Vikunja both log in
-# through Gitea's built-in OIDC provider; users are managed in Gitea only.
+# These files are in the same directory:
+#   .env             Copy env.example, then write your values in it.
+#   init.sql         PostgreSQL runs this file one time.
+#   Caddyfile        The TLS and proxy configuration.
+#   certs/root.crt   The root certificate. Give this file to each client.
+#   certs/root.key   The root private key. Make this key one time. Refer to the runbook.
 #
-# Network shape
-#   browser ── https://HOST_IP:{8081,8082,8083} ──> caddy ──> outline:3000 / gitea:3000 / vikunja:3456
-#   git ssh ── ssh://git@HOST_IP:2222 ───────────> gitea:22 (direct, no TLS proxy)
-#   Only caddy (and gitea :22) publish host ports. App containers are reachable only on the
-#   compose network. Server-to-server OIDC calls (outline/vikunja -> gitea) go through
-#   https://HOST_IP:8082 like a browser would, so the issuer string matches exactly; both
-#   containers trust certs/root.crt for that hop.
+# AUTHENTICATION
+# Gitea is the only identity provider. Outline and Vikunja use the OIDC provider in Gitea.
+# You make all user accounts in Gitea.
 #
-# Deployment profiles (set DEPLOYMENT_PROFILE in .env; it selects the two variables below)
-#   isolated   no outbound access at runtime. Images arrive by `docker save`/`docker load`,
-#              Actions resolve from this instance, update checks are off. The default.
-#   connected  the host has internet. Images pull normally and Actions may resolve upstream.
-#   Everything else is identical between the two, TLS included: both serve LAN clients
-#   from a private CA, because neither profile has a publicly resolvable name.
+# NETWORK
+#   A browser connects to https://HOST_IP:8081, 8082 or 8083. Caddy receives the request.
+#   Caddy sends the request to outline:3000, gitea:3000 or vikunja:3456.
+#   A git client connects to ssh://git@HOST_IP:2222. Gitea receives the request on port 22.
+#   The SSH connection does not go through Caddy.
+#   Only Caddy and the Gitea SSH port are open on the host. The other containers are
+#   available only on the compose network.
+#   Outline and Vikunja also connect to https://HOST_IP:8082 for OIDC. They use the same
+#   address as a browser. Thus the issuer value is always the same. These two containers
+#   trust the file certs/root.crt for this connection.
 #
-# Conventions
-#   * All persistent state lives under ${DATA_ROOT}, an absolute host path. Pick one your
-#     container runtime is allowed to bind-mount; some managed Docker UIs share only
-#     specific parent directories.
-#   * Every image is a variable so the same file runs in both profiles. Use immutable
-#     version tags. Digests do NOT survive `docker save`/`docker load`, so verify
-#     transported images by image ID (docker image inspect --format '{{.Id}}').
-#   * Secrets live only in .env (chmod 600) and certs/root.key (chmod 600).
-#   * Removed on purpose: Garage (Outline stores files locally since 0.72) and
-#     Nexus (Gitea's package registry covers hosted artifacts; proxying is moot offline).
+# DEPLOYMENT PROFILES
+# Set DEPLOYMENT_PROFILE in the .env file. The profile controls two variables.
+#   isolated    The host has no external access. You move the images with the commands
+#               `docker save` and `docker load`. Actions come from this Gitea server.
+#               Update checks are off. This profile is the default.
+#   connected   The host has external access. Docker pulls the images. Actions can come
+#               from an external server.
+# The two profiles are the same in all other conditions. Both profiles use TLS. Neither
+# profile has a public name, thus both profiles use a private CA.
+#
+# RULES
+#   * All data is in the directory ${DATA_ROOT}. Use an absolute path on the host.
+#     Some Docker interfaces permit bind mounts only from specified parent directories.
+#     Make sure that your container runtime can do a bind mount from your path.
+#   * Each image is a variable. Thus this file operates in the two profiles.
+#     Use a version tag that does not change.
+#   * WARNING: A digest does not stay correct after `docker save` and `docker load`.
+#     Examine each image that you move. Use the image ID for this check.
+#     Command: docker image inspect --format '{{.Id}}'
+#   * The secret values are only in .env and in certs/root.key. Set mode 600 on both files.
+#   * This stack does not include Garage. Outline keeps its files on a local disk from
+#     version 0.72.
+#   * This stack does not include Nexus. The package registry in Gitea keeps the artifacts.
+#     An isolated host cannot use the proxy function in Nexus.
 
 name: workspace
 
@@ -46,7 +62,8 @@ x-logging: &default-logging
 services:
 
   # ---------------------------------------------------------------------------
-  # Caddy — the only HTTP entry point. Terminates TLS with the operator's root CA.
+  # Caddy is the only HTTP entry point. Caddy uses your root CA and makes the TLS
+  # certificates.
   # ---------------------------------------------------------------------------
   caddy:
     image: ${CADDY_IMAGE:-caddy:2.10.2-alpine}
@@ -57,20 +74,24 @@ services:
       - "${GITEA_PORT:-8082}:${GITEA_PORT:-8082}"
       - "${VIKUNJA_PORT:-8083}:${VIKUNJA_PORT:-8083}"
     environment:
-      # consumed by {$VAR} placeholders in the Caddyfile
+      # The Caddyfile reads these values. In the Caddyfile they have the form {$VAR}.
       HOST_IP: ${HOST_IP:?set HOST_IP in .env}
       OUTLINE_PORT: ${OUTLINE_PORT:-8081}
       GITEA_PORT: ${GITEA_PORT:-8082}
       VIKUNJA_PORT: ${VIKUNJA_PORT:-8083}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      # root CA: Caddy signs a short-lived intermediate + leaf certs with this key.
+      # The root CA. Caddy uses this key to sign an intermediate certificate and the
+      # server certificates. These certificates have a short life.
       - ./certs:/certs:ro
-      # intermediate/leaf certs and locks; harmless to lose (re-issued from the root).
+      # The intermediate certificate, the server certificates and the locks.
+      # You can delete this directory. Caddy makes these certificates again.
       - ${DATA_ROOT:-/opt/workspace}/caddy:/data
     healthcheck:
-      # config loaded and serving. Admin API is bound to 127.0.0.1 inside the container only
-      # (use the literal IP: "localhost" resolves to ::1 first in the container).
+      # This test shows that Caddy read the configuration and operates correctly.
+      # The admin API listens only on 127.0.0.1 in the container.
+      # WARNING: Use the IP address 127.0.0.1. In the container, the name "localhost"
+      # first becomes the address ::1. Then the test fails.
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:2019/config/"]
       interval: 5s
       timeout: 3s
@@ -82,7 +103,7 @@ services:
     logging: *default-logging
 
   # ---------------------------------------------------------------------------
-  # Shared backends
+  # The shared servers: the database and the cache.
   # ---------------------------------------------------------------------------
   postgres:
     image: ${POSTGRES_IMAGE:-postgres:16-alpine}
@@ -91,18 +112,21 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?copy env.example to .env and fill it in}
-      # Read by init.sql on FIRST boot only, to create the per-app roles.
+      # The file init.sql reads these values at the first start. It makes one role
+      # for each application.
       OUTLINE_DB_PASSWORD: ${OUTLINE_DB_PASSWORD}
       GITEA_DB_PASSWORD: ${GITEA_DB_PASSWORD}
       VIKUNJA_DB_PASSWORD: ${VIKUNJA_DB_PASSWORD}
     volumes:
       - ${DATA_ROOT:-/opt/workspace}/postgres:/var/lib/postgresql/data
-      # Runs once, only when the data directory is empty. Creates roles + databases.
+      # PostgreSQL runs this file only when the data directory is empty. The file
+      # makes the roles and the databases.
       - ./init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
     healthcheck:
-      # -h 127.0.0.1 forces TCP. Without it pg_isready hits the unix socket, which is
-      # already up while the socket-only bootstrap server runs init scripts, and
-      # depends_on would release the apps before they can actually connect.
+      # The option -h 127.0.0.1 makes pg_isready use TCP.
+      # WARNING: Do not remove this option. Without it, pg_isready uses the UNIX socket.
+      # That socket is available while PostgreSQL runs the initialization files.
+      # Then depends_on starts the applications too soon and they cannot connect.
       test: ["CMD-SHELL", "pg_isready -U postgres -h 127.0.0.1"]
       interval: 5s
       timeout: 5s
@@ -118,8 +142,9 @@ services:
     image: ${VALKEY_IMAGE:-valkey/valkey:8.1-alpine}
     container_name: workspace-valkey
     restart: unless-stopped
-    # Outline uses it for job queues, websocket pub/sub and collaboration state.
-    # Nothing here needs to survive a restart, so persistence is off.
+    # Outline uses Valkey for the job queues, for the websocket messages and for the
+    # collaboration data. Valkey does not write this data to a disk. The data is not
+    # necessary after a restart.
     command: ["valkey-server", "--save", "", "--appendonly", "no"]
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
@@ -133,50 +158,57 @@ services:
     logging: *default-logging
 
   # ---------------------------------------------------------------------------
-  # Gitea — git hosting, package registry, Actions, and the OIDC provider
+  # Gitea gives git, the package registry, Actions and the OIDC provider.
   # ---------------------------------------------------------------------------
   gitea:
     image: ${GITEA_IMAGE:-gitea/gitea:1.26}
     container_name: workspace-gitea
     restart: unless-stopped
     ports:
-      - "2222:22"                                  # HTTP is served through caddy only
+      - "2222:22"                                  # Only SSH is open here. Caddy gives HTTP.
     volumes:
-      # Repos, LFS objects, SSH host keys, app.ini (incl. generated JWT secrets).
+      # This directory has the repositories, the LFS objects, the SSH host keys and
+      # the file app.ini. The file app.ini also has the JWT secret values.
       - ${DATA_ROOT:-/opt/workspace}/gitea:/data
     environment:
       USER_UID: "1000"
       USER_GID: "1000"
-      # --- database (role created by init.sql) ---
+      # The database. The file init.sql makes this role.
       GITEA__database__DB_TYPE: postgres
       GITEA__database__HOST: postgres:5432
       GITEA__database__NAME: gitea
       GITEA__database__USER: gitea
       GITEA__database__PASSWD: ${GITEA_DB_PASSWORD}
       GITEA__database__SSL_MODE: disable
-      # --- URLs: browsers, clone URLs, registry name and OIDC issuer all derive from ROOT_URL ---
-      # Verified on 1.26: the OIDC discovery `issuer` is ROOT_URL WITHOUT its trailing slash.
+      # ROOT_URL controls four values: the browser address, the clone address, the
+      # registry name and the OIDC issuer.
+      # NOTE: In Gitea 1.26 the OIDC issuer is ROOT_URL without the last slash.
       GITEA__server__ROOT_URL: https://${HOST_IP:?}:${GITEA_PORT:-8082}/
       GITEA__server__DOMAIN: ${HOST_IP}
       GITEA__server__SSH_DOMAIN: ${HOST_IP}
       GITEA__server__SSH_PORT: "2222"
       GITEA__server__LFS_START_SERVER: "true"
-      # Only caddy can reach :3000 (not published), so trust its X-Forwarded-For for client IPs in logs.
+      # Port 3000 is not open on the host. Only Caddy can connect to it. Thus Gitea can
+      # trust the header X-Forwarded-For and record the client address in the log.
       GITEA__security__REVERSE_PROXY_TRUSTED_PROXIES: "*"
-      # --- unattended, closed environment ---
-      GITEA__security__INSTALL_LOCK: "true"          # no web installer; admin via one `gitea admin user create`
-      GITEA__service__DISABLE_REGISTRATION: "true"   # users are created by an admin
+      # These options make an unattended and closed installation.
+      GITEA__security__INSTALL_LOCK: "true"          # No web installer. Make the admin
+                                                     # with `gitea admin user create`.
+      GITEA__service__DISABLE_REGISTRATION: "true"   # Only an admin makes a user.
       GITEA__repository__DEFAULT_BRANCH: main
       GITEA__mailer__ENABLED: "false"
-      # section names containing "." are escaped as _0X2E_ in env-var form (verified: lands in [cron.update_checker])
-      GITEA__cron_0X2E_update_checker__ENABLED: "${UPDATE_CHECKS:-false}"   # isolated: no phone-home attempts
-      # --- features ---
-      GITEA__oauth2__ENABLED: "true"                 # OIDC provider for Outline and Vikunja
-      GITEA__packages__ENABLED: "true"               # container/maven/npm/pypi/... registry
+      # A section name with a "." becomes _0X2E_ in a variable name. This variable
+      # goes to the section [cron.update_checker].
+      GITEA__cron_0X2E_update_checker__ENABLED: "${UPDATE_CHECKS:-false}"   # isolated: no external request
+      # These options control the functions.
+      GITEA__oauth2__ENABLED: "true"                 # The OIDC provider for Outline and Vikunja.
+      GITEA__packages__ENABLED: "true"               # The registry for container, Maven,
+                                                     # npm, PyPI and other packages.
       GITEA__actions__ENABLED: "true"
-      # isolated ("self"): `uses: actions/checkout@v4` resolves to <ROOT_URL>/actions/checkout,
-      #   so mirror the actions you use into a local "actions" org before running workflows.
-      # connected ("github"): they resolve upstream as usual.
+      # With the value "self", the line `uses: actions/checkout@v4` becomes the address
+      # <ROOT_URL>/actions/checkout. Before you start a workflow, copy each action that
+      # you use into a local organization with the name "actions".
+      # With the value "github", each action comes from the external server.
       GITEA__actions__DEFAULT_ACTIONS_URL: ${ACTIONS_URL:-self}
     depends_on:
       postgres:
@@ -194,44 +226,51 @@ services:
     logging: *default-logging
 
   # ---------------------------------------------------------------------------
-  # Outline — wiki. Local file storage, Gitea as identity provider.
+  # Outline is the wiki. It keeps its files on a local disk. Gitea gives the identity.
   # ---------------------------------------------------------------------------
   outline:
     image: ${OUTLINE_IMAGE:-outlinewiki/outline:1.8.0}
     container_name: workspace-outline
     restart: unless-stopped
     volumes:
-      # Attachments/images. The container runs as uid 1001 — chown 1001:1001 on the host.
+      # The attachments and the images. The container operates as user 1001.
+      # On the host, set the owner of this directory to 1001:1001.
       - ${DATA_ROOT:-/opt/workspace}/outline:/var/lib/outline/data
-      # Trust our CA for the server-side token/userinfo calls to https://HOST_IP:GITEA_PORT
+      # Outline trusts this certificate. Outline uses it for the token request and
+      # the userinfo request to https://HOST_IP:GITEA_PORT.
       - ./certs/root.crt:/certs/root.crt:ro
     environment:
       NODE_ENV: production
       NODE_EXTRA_CA_CERTS: /certs/root.crt
-      URL: https://${HOST_IP}:${OUTLINE_PORT:-8081}   # browser-facing URL; must match what users type
+      # The address for the browser. It must agree with the address that a user types.
+      URL: https://${HOST_IP}:${OUTLINE_PORT:-8081}
       PORT: "3000"
-      # Outline trusts X-Forwarded-Proto from caddy (koa app.proxy=true). The OAuth state
-      # cookie is Secure whenever NODE_ENV=production, which is why TLS is mandatory.
-      FORCE_HTTPS: "false"               # moot: there is no plain-http listener anyway
+      # Outline trusts the header X-Forwarded-Proto from Caddy.
+      # WARNING: TLS is necessary. With NODE_ENV=production, Outline sets the Secure flag
+      # on the OAuth state cookie. The login fails on an HTTP connection.
+      FORCE_HTTPS: "false"               # There is no HTTP listener, thus this value
+                                         # has no effect.
       ENABLE_UPDATES: "${UPDATE_CHECKS:-false}"   # isolated: no update checks
-      WEB_CONCURRENCY: "1"               # one web process is plenty for a small team
+      WEB_CONCURRENCY: "1"               # One process is sufficient for a small team.
       LOG_LEVEL: info
       DEFAULT_LANGUAGE: en_US
-      SECRET_KEY: ${OUTLINE_SECRET_KEY}         # 64 hex chars
-      UTILS_SECRET: ${OUTLINE_UTILS_SECRET}     # 64 hex chars
-      # --- database / cache ---
+      SECRET_KEY: ${OUTLINE_SECRET_KEY}         # Use 64 hexadecimal characters.
+      UTILS_SECRET: ${OUTLINE_UTILS_SECRET}     # Use 64 hexadecimal characters.
+      # The database and the cache.
       DATABASE_URL: postgres://outline:${OUTLINE_DB_PASSWORD}@postgres:5432/outline
-      PGSSLMODE: disable                 # production mode otherwise insists on TLS to PG
+      PGSSLMODE: disable                 # Without this value, Outline makes a TLS
+                                         # connection to PostgreSQL.
       REDIS_URL: redis://valkey:6379
-      # --- file storage: local disk instead of S3 ---
+      # The file storage. Outline uses a local disk and does not use S3.
       FILE_STORAGE: local
       FILE_STORAGE_LOCAL_ROOT_DIR: /var/lib/outline/data
-      FILE_STORAGE_UPLOAD_MAX_SIZE: "262144000"   # 250 MB
-      # --- authentication: Gitea's built-in OIDC provider ---
-      # Create the app in Gitea (admin user -> Settings -> Applications, or the API):
+      FILE_STORAGE_UPLOAD_MAX_SIZE: "262144000"   # 250 MB.
+      # The authentication. Outline uses the OIDC provider in Gitea.
+      # First, make the application in Gitea. Use the admin user, then Settings, then
+      # Applications. As an alternative, use the API.
       #   Redirect URI:        https://${HOST_IP}:${OUTLINE_PORT}/auth/oidc.callback
       #   Confidential client: yes
-      # then put the generated id/secret in .env.
+      # Then write the client ID and the client secret in the .env file.
       OIDC_CLIENT_ID: ${OUTLINE_OIDC_CLIENT_ID:-}
       OIDC_CLIENT_SECRET: ${OUTLINE_OIDC_CLIENT_SECRET:-}
       OIDC_AUTH_URI: https://${HOST_IP}:${GITEA_PORT:-8082}/login/oauth/authorize
@@ -239,7 +278,8 @@ services:
       OIDC_USERINFO_URI: https://${HOST_IP}:${GITEA_PORT:-8082}/login/oauth/userinfo
       OIDC_USERNAME_CLAIM: preferred_username
       OIDC_DISPLAY_NAME: Gitea
-      OIDC_SCOPES: openid profile email  # "email" is mandatory: Outline requires an email claim
+      # WARNING: Keep the scope "email". Outline needs the email claim.
+      OIDC_SCOPES: openid profile email
     depends_on:
       postgres:
         condition: service_healthy
@@ -252,43 +292,55 @@ services:
     logging: *default-logging
 
   # ---------------------------------------------------------------------------
-  # Vikunja — tasks / kanban / gantt. Login only via Gitea (OIDC); no local accounts.
+  # Vikunja gives the tasks, the kanban boards and the gantt charts. A user can log in
+  # only with Gitea. There are no local accounts.
   # ---------------------------------------------------------------------------
   vikunja:
     image: ${VIKUNJA_IMAGE:-vikunja/vikunja:2.3.0}
     container_name: workspace-vikunja
     restart: unless-stopped
     volumes:
-      # Task attachments. Container runs as PUID/PGID below — chown 1000:1000 on the host.
+      # The task attachments. The container operates as the user in PUID and PGID.
+      # On the host, set the owner of this directory to 1000:1000.
       - ${DATA_ROOT:-/opt/workspace}/vikunja/files:/app/vikunja/files
-      # Trust our CA for the discovery/token/userinfo calls to https://HOST_IP:GITEA_PORT
+      # Vikunja trusts this certificate. Vikunja uses it for the discovery request, the
+      # token request and the userinfo request to https://HOST_IP:GITEA_PORT.
       - ./certs/root.crt:/certs/root.crt:ro
     environment:
       PUID: "1000"
       PGID: "1000"
       TZ: ${TZ:-UTC}
-      SSL_CERT_FILE: /certs/root.crt                        # Go: replaces the system CA bundle
-      VIKUNJA_SERVICE_PUBLICURL: https://${HOST_IP}:${VIKUNJA_PORT:-8083}/   # share links, CalDAV
-      # Vikunja 2.x: service.secret replaces the deprecated service.jwtsecret (logs a WARN if used).
+      # This file replaces the system certificate list for the Go runtime.
+      SSL_CERT_FILE: /certs/root.crt
+      # Vikunja uses this address for the share links and for CalDAV.
+      VIKUNJA_SERVICE_PUBLICURL: https://${HOST_IP}:${VIKUNJA_PORT:-8083}/
+      # In Vikunja 2, service.secret replaces service.jwtsecret. The old name is
+      # obsolete. Vikunja writes a warning in the log if you use the old name.
       VIKUNJA_SERVICE_SECRET: ${VIKUNJA_JWT_SECRET}
       VIKUNJA_SERVICE_TIMEZONE: ${TZ:-UTC}
-      VIKUNJA_SERVICE_ENABLEREGISTRATION: "false"          # no self-service local sign-up
-      # --- authentication: Gitea via OIDC (users auto-created on first login) ---
-      # Create the app in Gitea (admin user -> Settings -> Applications, or the API):
+      VIKUNJA_SERVICE_ENABLEREGISTRATION: "false"          # A user cannot make a local account.
+      # The authentication. Vikunja uses Gitea with OIDC. Vikunja makes the user account
+      # at the first login.
+      # First, make the application in Gitea. Use the admin user, then Settings, then
+      # Applications. As an alternative, use the API.
       #   Redirect URI:        https://${HOST_IP}:${VIKUNJA_PORT}/auth/openid/gitea
-      #                        (last segment = provider key = "GITEA" below, lower-cased)
+      #                        The last part of the address is the provider key. It is the
+      #                        word GITEA below, in small letters.
       #   Confidential client: yes
-      # AUTHURL is the OIDC issuer. Vikunja fetches <AUTHURL>/.well-known/openid-configuration
-      # and requires the issuer string to match EXACTLY. Gitea 1.26 reports the issuer WITHOUT
-      # a trailing slash, so there must be none here.
-      VIKUNJA_AUTH_LOCAL_ENABLED: "false"                   # set "true" for a break-glass local login
+      # AUTHURL is the OIDC issuer. Vikunja gets the file
+      # <AUTHURL>/.well-known/openid-configuration. The issuer in that file must agree
+      # with AUTHURL.
+      # WARNING: Do not put a slash at the end of AUTHURL. Gitea 1.26 gives the issuer
+      # without a slash at the end. If the two values do not agree, the login fails.
+      # Set the value below to "true" if you need a local account for an emergency.
+      VIKUNJA_AUTH_LOCAL_ENABLED: "false"
       VIKUNJA_AUTH_OPENID_ENABLED: "true"
       VIKUNJA_AUTH_OPENID_PROVIDERS_GITEA_NAME: Gitea
       VIKUNJA_AUTH_OPENID_PROVIDERS_GITEA_AUTHURL: https://${HOST_IP}:${GITEA_PORT:-8082}
       VIKUNJA_AUTH_OPENID_PROVIDERS_GITEA_CLIENTID: ${VIKUNJA_OIDC_CLIENT_ID:-}
       VIKUNJA_AUTH_OPENID_PROVIDERS_GITEA_CLIENTSECRET: ${VIKUNJA_OIDC_CLIENT_SECRET:-}
       VIKUNJA_AUTH_OPENID_PROVIDERS_GITEA_SCOPE: openid profile email
-      # --- database (role created by init.sql) ---
+      # The database. The file init.sql makes this role.
       VIKUNJA_DATABASE_TYPE: postgres
       VIKUNJA_DATABASE_HOST: postgres:5432
       VIKUNJA_DATABASE_DATABASE: vikunja
@@ -297,7 +349,8 @@ services:
       VIKUNJA_DATABASE_SSLMODE: disable
       VIKUNJA_MAILER_ENABLED: "false"
       VIKUNJA_FILES_MAXSIZE: 50MB
-      # Default in-memory cache is fine at this scale. To share Valkey instead:
+      # Vikunja keeps its cache in memory. This cache is sufficient for a small team.
+      # To use Valkey for the cache, remove the # from the four lines that follow.
       # VIKUNJA_CACHE_ENABLED: "true"
       # VIKUNJA_CACHE_TYPE: redis
       # VIKUNJA_REDIS_ENABLED: "true"
@@ -306,9 +359,9 @@ services:
       postgres:
         condition: service_healthy
       gitea:
-        condition: service_healthy       # discovery document is fetched at startup ...
+        condition: service_healthy       # Vikunja gets the discovery file at the start.
       caddy:
-        condition: service_healthy       # ... through caddy, over TLS
+        condition: service_healthy       # The request goes through Caddy with TLS.
     deploy:
       resources:
         limits:

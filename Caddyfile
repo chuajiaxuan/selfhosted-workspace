@@ -1,16 +1,18 @@
-# Caddy — TLS termination for the whole workspace, signed by the operator's own root CA.
-# Placeholders {$VAR} are filled from the caddy service's environment (see docker-compose.yml).
+# Caddy gives TLS to the three applications. Caddy signs the certificates with your root CA.
+# The values {$VAR} come from the environment of the caddy service in docker-compose.yml.
 #
-# Why TLS at all in an air-gapped LAN: Outline 1.8 sets its OAuth state cookie Secure=true
-# whenever NODE_ENV=production, so OIDC login over plain http fails with HTTP 500.
-# Putting every app behind the same CA also lets `docker push` and `git` over https work
-# with one trusted root instead of insecure-registries.
+# TLS is necessary on a local network for this stack. With NODE_ENV=production, Outline 1.8
+# sets the Secure flag on the OAuth state cookie. Then an HTTP login gives the error 500.
+# One CA for the three applications has a second advantage. The commands `docker push` and
+# `git` operate with HTTPS. You do not need the option insecure-registries.
 {
-	# admin API stays inside the container (never published); used by the healthcheck
+	# The admin API stays in the container. It is not open on the host.
+	# The healthcheck in docker-compose.yml uses this API.
 	admin localhost:2019
-	auto_https disable_redirects   # no :80 listeners exist
-	skip_install_trust             # do not try to install the root into the container's store
-	# browsers and curl send no SNI when the address is a bare IP; serve this cert then
+	auto_https disable_redirects   # There is no listener on port 80.
+	skip_install_trust             # Do not install the root certificate in the container.
+	# A browser and the command curl do not send an SNI value for an IP address.
+	# Caddy then gives the certificate for this address.
 	default_sni {$HOST_IP}
 	pki {
 		ca local {
@@ -22,7 +24,7 @@
 		}
 	}
 	servers {
-		protocols h1 h2          # h3 needs UDP ports; keep it TCP-only
+		protocols h1 h2          # HTTP/3 needs UDP ports. Use only TCP.
 	}
 }
 

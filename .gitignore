@@ -1,12 +1,13 @@
-# --- never commit: secrets and per-cluster private material (see DESIGN.md §5.1) ---
+# WARNING: Do not commit these files. They have the secret values.
+# Refer to DESIGN.md, section 5.1.
 .env
 certs/
-# --- runtime state (DATA_ROOT when it is inside this directory) ---
+# The application data. This directory is DATA_ROOT when DATA_ROOT is here.
 data/
-# --- superseded local working copies and device-specific notes ---
+# Old working copies and notes for one machine.
 rev2/
-POC-MAC-NOTES.md
+LOCAL-NOTES.md
 *.tgz
 *.ids
-# --- OS noise ---
+# Operating system files.
 .DS_Store
