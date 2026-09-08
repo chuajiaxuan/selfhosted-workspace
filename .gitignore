@@ -11,3 +11,5 @@ LOCAL-NOTES.md
 *.ids
 # Operating system files.
 .DS_Store
+# Database dumps. They contain the data and the password hashes.
+backups/

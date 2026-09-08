@@ -98,16 +98,34 @@ A test of the stack showed each of these errors:
 
 | Component | Image | Function | Memory limit | Memory when idle |
 |---|---|---|---|---|
-| Caddy | `caddy:2.10.2-alpine` | Receives each HTTP request. Signs the certificates. | 128 M | 11 to 16 MB |
-| PostgreSQL | `postgres:16-alpine` | The database. One role and one database for each application. | 512 M | approximately 50 MB |
-| Valkey | `valkey/valkey:8.1-alpine` | The queues, the messages and the collaboration data for Outline. It writes no data to a disk. | 128 M | approximately 13 MB |
-| Gitea | `gitea/gitea:1.26` | git, LFS, the packages, Actions and the **OIDC provider**. | 1 G | 90 to 110 MB |
-| Outline | `outlinewiki/outline:1.8.0` | The wiki. It keeps the files on a local disk and uses Gitea for the login. | 1 G | 340 MB. It uses 520 MB immediately after the migrations. |
-| Vikunja | `vikunja/vikunja:2.3.0` | The tasks, the kanban boards and the gantt charts. It uses Gitea for the login. | 256 M | approximately 15 MB |
+| Caddy | `caddy:2.11.4-alpine` | Receives each HTTP request. Signs the certificates. | 128 M | 20 to 60 MB |
+| PostgreSQL | `postgres:16.15-alpine` | The database. One role and one database for each application. | 512 M | approximately 50 MB |
+| Valkey | `valkey/valkey:9.1.2-alpine` | The queues, the messages and the collaboration data for Outline. It writes no data to a disk. | 128 M | approximately 20 MB |
+| Gitea | `gitea/gitea:1.27.3` | git, LFS, the packages, Actions and the **OIDC provider**. | 1 G | 130 to 190 MB |
+| Outline | `outlinewiki/outline:1.10.0` | The wiki. It keeps the files on a local disk and uses Gitea for the login. | 1 G | 310 MB. It uses more memory immediately after the migrations. |
+| Vikunja | `vikunja/vikunja:2.6.0` | The tasks, the kanban boards and the gantt charts. It uses Gitea for the login. | 256 M | approximately 70 MB |
 
-When the stack is idle, it uses approximately **540 MB**. The sum of the memory limits is
+When the stack is idle, it uses approximately **690 MB**. The sum of the memory limits is
 3 GB. The budget is approximately 6.5 GB. Thus there is sufficient memory. These quantities
 do not show a necessity to adjust the PostgreSQL configuration.
+
+### 3.1 The version policy
+
+Use a full version tag for each image. WARNING: Do not use a tag such as `16-alpine` or
+`1.26`. A tag of that type moves to a new image, and the installation is then not
+repeatable. The stack had three tags of that type before 2026-09-08.
+
+These rules apply to specified components:
+
+* **Valkey.** Use version 9.1.2 or a later version. Versions 9.1.0 and 9.1.1 have two
+  faults. A blocking command can stop a client permanently, and a key can keep its value
+  after its time limit. Outline uses blocking commands for its job queues.
+* **Caddy.** Do not use version 2.11.1. A configuration reload in a container fails in that
+  version. WARNING: From version 2.11, Caddy does not start if the root certificate has less
+  than 7 days of validity. Examine the certificate before an upgrade:
+  `openssl x509 -in certs/root.crt -noout -enddate`
+* **PostgreSQL.** This stack stays on version 16. Version 16 has support until 2028-11-09.
+  Version 18 needs a data migration. Refer to section 7.1.
 
 ## 4. The network and the trust model
 
@@ -307,7 +325,7 @@ services:
   # certificates.
   # ---------------------------------------------------------------------------
   caddy:
-    image: ${CADDY_IMAGE:-caddy:2.10.2-alpine}
+    image: ${CADDY_IMAGE:-caddy:2.11.4-alpine}
     container_name: workspace-caddy
     restart: unless-stopped
     ports:
@@ -347,7 +365,7 @@ services:
   # The shared servers: the database and the cache.
   # ---------------------------------------------------------------------------
   postgres:
-    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    image: ${POSTGRES_IMAGE:-postgres:16.15-alpine}
     container_name: workspace-postgres
     restart: unless-stopped
     environment:
@@ -380,7 +398,7 @@ services:
     logging: *default-logging
 
   valkey:
-    image: ${VALKEY_IMAGE:-valkey/valkey:8.1-alpine}
+    image: ${VALKEY_IMAGE:-valkey/valkey:9.1.2-alpine}
     container_name: workspace-valkey
     restart: unless-stopped
     # Outline uses Valkey for the job queues, for the websocket messages and for the
@@ -402,7 +420,7 @@ services:
   # Gitea gives git, the package registry, Actions and the OIDC provider.
   # ---------------------------------------------------------------------------
   gitea:
-    image: ${GITEA_IMAGE:-gitea/gitea:1.26}
+    image: ${GITEA_IMAGE:-gitea/gitea:1.27.3}
     container_name: workspace-gitea
     restart: unless-stopped
     ports:
@@ -443,6 +461,10 @@ services:
       GITEA__cron_0X2E_update_checker__ENABLED: "${UPDATE_CHECKS:-false}"   # isolated: no external request
       # These options control the functions.
       GITEA__oauth2__ENABLED: "true"                 # The OIDC provider for Outline and Vikunja.
+      # Gitea 1.27 adds a built-in OAuth2 application for its own desktop client.
+      # This installation does not use that client. An empty value removes it.
+      GITEA__oauth2__DEFAULT_APPLICATIONS: ""
+
       GITEA__packages__ENABLED: "true"               # The registry for container, Maven,
                                                      # npm, PyPI and other packages.
       GITEA__actions__ENABLED: "true"
@@ -451,6 +473,10 @@ services:
       # you use into a local organization with the name "actions".
       # With the value "github", each action comes from the external server.
       GITEA__actions__DEFAULT_ACTIONS_URL: ${ACTIONS_URL:-self}
+      # Gitea 1.27 adds instance-wide workflow directories and enables them. After an
+      # administrator registers a source repository, its workflows operate on each
+      # repository. An empty value keeps each repository independent.
+      GITEA__actions__SCOPED_WORKFLOW_DIRS: ""
     depends_on:
       postgres:
         condition: service_healthy
@@ -470,7 +496,7 @@ services:
   # Outline is the wiki. It keeps its files on a local disk. Gitea gives the identity.
   # ---------------------------------------------------------------------------
   outline:
-    image: ${OUTLINE_IMAGE:-outlinewiki/outline:1.8.0}
+    image: ${OUTLINE_IMAGE:-outlinewiki/outline:1.10.0}
     container_name: workspace-outline
     restart: unless-stopped
     volumes:
@@ -537,7 +563,7 @@ services:
   # only with Gitea. There are no local accounts.
   # ---------------------------------------------------------------------------
   vikunja:
-    image: ${VIKUNJA_IMAGE:-vikunja/vikunja:2.3.0}
+    image: ${VIKUNJA_IMAGE:-vikunja/vikunja:2.6.0}
     container_name: workspace-vikunja
     restart: unless-stopped
     volumes:
@@ -548,8 +574,9 @@ services:
       # token request and the userinfo request to https://HOST_IP:GITEA_PORT.
       - ./certs/root.crt:/certs/root.crt:ro
     environment:
-      PUID: "1000"
-      PGID: "1000"
+      # NOTE: This image has no shell and operates as user 1000. The variables PUID
+      # and PGID have no function here. Set the owner of the data directory to
+      # 1000:1000 on the host.
       TZ: ${TZ:-UTC}
       # This file replaces the system certificate list for the Go runtime.
       SSL_CERT_FILE: /certs/root.crt
@@ -699,13 +726,22 @@ GITEA_PORT=8082
 VIKUNJA_PORT=8083
 
 # --- images -------------------------------------------------------------------
-# Use a version tag that does not change. Change a tag only when you decide to do it.
-CADDY_IMAGE=caddy:2.10.2-alpine
-POSTGRES_IMAGE=postgres:16-alpine
-VALKEY_IMAGE=valkey/valkey:8.1-alpine
-GITEA_IMAGE=gitea/gitea:1.26
-OUTLINE_IMAGE=outlinewiki/outline:1.8.0
-VIKUNJA_IMAGE=vikunja/vikunja:2.3.0
+# Use a full version tag. WARNING: Do not use a tag such as "16-alpine" or "1.26".
+# Those tags move to a new image and the installation is then not repeatable.
+#
+# NOTE on Valkey: use 9.1.2 or a later version. Versions 9.1.0 and 9.1.1 have two
+# faults. A blocking command can stop a client permanently, and a key can keep its
+# value after the time limit. Outline uses blocking commands for its job queues.
+#
+# NOTE on PostgreSQL: this line stays on version 16. PostgreSQL 16 has support until
+# 2028-11-09. Version 18 needs a data migration, not a new tag. Refer to DESIGN.md,
+# section 11.
+CADDY_IMAGE=caddy:2.11.4-alpine
+POSTGRES_IMAGE=postgres:16.15-alpine
+VALKEY_IMAGE=valkey/valkey:9.1.2-alpine
+GITEA_IMAGE=gitea/gitea:1.27.3
+OUTLINE_IMAGE=outlinewiki/outline:1.10.0
+VIKUNJA_IMAGE=vikunja/vikunja:2.6.0
 
 # --- secret values ------------------------------------------------------------
 # These two commands make the seven secret values. The examples show GNU sed.
@@ -893,6 +929,51 @@ docker compose config --images | xargs -n1 docker image inspect --format '{{.Rep
 #    client keeps its trust. Then set HOST_IP and DATA_ROOT and do steps 3 to 7.
 ```
 
+### 7.1 The procedure to move PostgreSQL from version 16 to version 18
+
+WARNING: A change of the image tag does not do this upgrade. The data format is different in
+each major version. Two conditions apply to the version 18 image:
+
+* The image puts its data in `/var/lib/postgresql/18/docker`, not in
+  `/var/lib/postgresql/data`.
+* The image does not start if the compose file mounts a directory at
+  `/var/lib/postgresql/data`. An empty directory also stops the start. You must remove that
+  mount line and put a mount at `/var/lib/postgresql`.
+
+Do these steps in this sequence:
+
+1. Get the version 18 image on a host that has external access. Then move it to the target
+   host.
+2. Stop the applications. Keep PostgreSQL in operation:
+   `docker compose stop caddy gitea outline vikunja`
+3. Make the dump with the **version 18** program, not the version 16 program. The version 16
+   image has only version 16 programs. Use a temporary container on the compose network.
+   The new `psql` is also necessary for the restore, because a dump from 2026 or later
+   contains the commands `\restrict` and `\unrestrict`.
+4. Stop PostgreSQL with a long time limit: `docker compose stop -t 120 postgres`
+5. WARNING: Do not delete the old data directory. Change its name:
+   `mv "$DATA_ROOT/postgres" "$DATA_ROOT/postgres-16.bak"`
+6. In the compose file, change the image tag to `18.6-alpine` and change the mount to
+   `${DATA_ROOT}/postgres:/var/lib/postgresql`.
+7. Remove the `init.sql` mount for this start. WARNING: Do not omit this step. The file makes
+   the roles in the new empty database, and the restore then fails with the message
+   `role "outline" already exists`. The dump contains the roles, the databases, the
+   permissions and the extensions.
+8. Start PostgreSQL: `docker compose up -d postgres`
+9. Restore the dump with the version 18 `psql` and the options `-X -v ON_ERROR_STOP=1`.
+10. Make the statistics again: `vacuumdb --all --analyze-in-stages`. A restore has no
+    statistics for the query planner.
+11. Put the `init.sql` mount back. Then start the applications.
+
+To go back to version 16, change the tag and the mount to their old values and change the
+name of the old directory back. The old directory is the fastest method to go back.
+
+NOTE: Version 18 makes data checksums at the initialization. Your version 16 cluster has no
+checksums. This procedure gives the checksums to the new cluster.
+
+NOTE: Version 18 starts three more background processes for its input and output. Examine
+the memory of the container after the upgrade.
+
 ## 8. The test list
 
 ```bash
@@ -1036,6 +1117,32 @@ needs a native Linux daemon.
   `depends_on.condition: service_healthy` operates.
 * The YAML values `!override` and `!reset` operated in the revision 2 override file. That
   file is no longer necessary.
+
+### 9.7 The upgrade of 2026-09-08
+
+The stack moved from its first versions to the versions in section 3. A test host did each
+step and examined the result. The sequence was Gitea, then Valkey and Caddy, then Vikunja,
+then Outline.
+
+* **Gitea 1.26.4 to 1.27.3.** Migrations 331 to 342 operated correctly. The OIDC discovery
+  file did not change, and the issuer has no slash at the end. The two OAuth2 applications
+  and their client secrets stayed correct. No secret was necessary again.
+* **Valkey 8.1.10 to 9.1.2.** The reported Redis version stays 7.2.4, thus a Redis client
+  operates without a change. Persistence stays off. The command `valkey-cli ping` gives PONG.
+* **Caddy 2.10.2 to 2.11.4.** The TLS chain gives the result `0 (ok)` against the root
+  certificate. NOTE: During the first minute, three requests gave no reply. The log shows
+  that Caddy made a new server certificate at that time. The requests were correct after
+  that minute.
+* **Vikunja 2.3.0 to 2.6.0.** Migrations operated correctly. The provider list has Gitea and
+  local login stays off. Vikunja writes one warning about a license key. That function makes
+  no external request when the key is empty.
+* **Outline 1.8.0 to 1.10.0.** Twelve migrations operated correctly. No environment variable
+  needed a change. The extension `btree_gin` was made by the superuser before the upgrade,
+  because the `outline` role cannot make an extension.
+* After all five upgrades: each container is healthy, the three health addresses give 200,
+  the Outline login start gives 302, both client secrets are correct, and the request from
+  the Outline container to Gitea gives 200. There is no x509 error and no error in the log.
+* The memory of the stack went from approximately 540 MB to approximately 690 MB.
 
 ### 9.6 Caddy 2.10.2
 

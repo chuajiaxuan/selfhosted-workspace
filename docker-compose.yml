@@ -66,7 +66,7 @@ services:
   # certificates.
   # ---------------------------------------------------------------------------
   caddy:
-    image: ${CADDY_IMAGE:-caddy:2.10.2-alpine}
+    image: ${CADDY_IMAGE:-caddy:2.11.4-alpine}
     container_name: workspace-caddy
     restart: unless-stopped
     ports:
@@ -106,7 +106,7 @@ services:
   # The shared servers: the database and the cache.
   # ---------------------------------------------------------------------------
   postgres:
-    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    image: ${POSTGRES_IMAGE:-postgres:16.15-alpine}
     container_name: workspace-postgres
     restart: unless-stopped
     environment:
@@ -139,7 +139,7 @@ services:
     logging: *default-logging
 
   valkey:
-    image: ${VALKEY_IMAGE:-valkey/valkey:8.1-alpine}
+    image: ${VALKEY_IMAGE:-valkey/valkey:9.1.2-alpine}
     container_name: workspace-valkey
     restart: unless-stopped
     # Outline uses Valkey for the job queues, for the websocket messages and for the
@@ -161,7 +161,7 @@ services:
   # Gitea gives git, the package registry, Actions and the OIDC provider.
   # ---------------------------------------------------------------------------
   gitea:
-    image: ${GITEA_IMAGE:-gitea/gitea:1.26}
+    image: ${GITEA_IMAGE:-gitea/gitea:1.27.3}
     container_name: workspace-gitea
     restart: unless-stopped
     ports:
@@ -202,6 +202,10 @@ services:
       GITEA__cron_0X2E_update_checker__ENABLED: "${UPDATE_CHECKS:-false}"   # isolated: no external request
       # These options control the functions.
       GITEA__oauth2__ENABLED: "true"                 # The OIDC provider for Outline and Vikunja.
+      # Gitea 1.27 adds a built-in OAuth2 application for its own desktop client.
+      # This installation does not use that client. An empty value removes it.
+      GITEA__oauth2__DEFAULT_APPLICATIONS: ""
+
       GITEA__packages__ENABLED: "true"               # The registry for container, Maven,
                                                      # npm, PyPI and other packages.
       GITEA__actions__ENABLED: "true"
@@ -210,6 +214,10 @@ services:
       # you use into a local organization with the name "actions".
       # With the value "github", each action comes from the external server.
       GITEA__actions__DEFAULT_ACTIONS_URL: ${ACTIONS_URL:-self}
+      # Gitea 1.27 adds instance-wide workflow directories and enables them. After an
+      # administrator registers a source repository, its workflows operate on each
+      # repository. An empty value keeps each repository independent.
+      GITEA__actions__SCOPED_WORKFLOW_DIRS: ""
     depends_on:
       postgres:
         condition: service_healthy
@@ -229,7 +237,7 @@ services:
   # Outline is the wiki. It keeps its files on a local disk. Gitea gives the identity.
   # ---------------------------------------------------------------------------
   outline:
-    image: ${OUTLINE_IMAGE:-outlinewiki/outline:1.8.0}
+    image: ${OUTLINE_IMAGE:-outlinewiki/outline:1.10.0}
     container_name: workspace-outline
     restart: unless-stopped
     volumes:
@@ -296,7 +304,7 @@ services:
   # only with Gitea. There are no local accounts.
   # ---------------------------------------------------------------------------
   vikunja:
-    image: ${VIKUNJA_IMAGE:-vikunja/vikunja:2.3.0}
+    image: ${VIKUNJA_IMAGE:-vikunja/vikunja:2.6.0}
     container_name: workspace-vikunja
     restart: unless-stopped
     volumes:
@@ -307,8 +315,9 @@ services:
       # token request and the userinfo request to https://HOST_IP:GITEA_PORT.
       - ./certs/root.crt:/certs/root.crt:ro
     environment:
-      PUID: "1000"
-      PGID: "1000"
+      # NOTE: This image has no shell and operates as user 1000. The variables PUID
+      # and PGID have no function here. Set the owner of the data directory to
+      # 1000:1000 on the host.
       TZ: ${TZ:-UTC}
       # This file replaces the system certificate list for the Go runtime.
       SSL_CERT_FILE: /certs/root.crt
