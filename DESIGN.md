@@ -99,7 +99,7 @@ A test of the stack showed each of these errors:
 | Component | Image | Function | Memory limit | Memory when idle |
 |---|---|---|---|---|
 | Caddy | `caddy:2.11.4-alpine` | Receives each HTTP request. Signs the certificates. | 128 M | 20 to 60 MB |
-| PostgreSQL | `postgres:16.15-alpine` | The database. One role and one database for each application. | 512 M | approximately 50 MB |
+| PostgreSQL | `postgres:18.6-alpine` | The database. One role and one database for each application. | 512 M | approximately 50 MB |
 | Valkey | `valkey/valkey:9.1.2-alpine` | The queues, the messages and the collaboration data for Outline. It writes no data to a disk. | 128 M | approximately 20 MB |
 | Gitea | `gitea/gitea:1.27.3` | git, LFS, the packages, Actions and the **OIDC provider**. | 1 G | 130 to 190 MB |
 | Outline | `outlinewiki/outline:1.10.0` | The wiki. It keeps the files on a local disk and uses Gitea for the login. | 1 G | 310 MB. It uses more memory immediately after the migrations. |
@@ -124,8 +124,8 @@ These rules apply to specified components:
   version. WARNING: From version 2.11, Caddy does not start if the root certificate has less
   than 7 days of validity. Examine the certificate before an upgrade:
   `openssl x509 -in certs/root.crt -noout -enddate`
-* **PostgreSQL.** This stack stays on version 16. Version 16 has support until 2028-11-09.
-  Version 18 needs a data migration. Refer to section 7.1.
+* **PostgreSQL.** This stack uses version 18. WARNING: A move from version 16 to version 18
+  is not a change of the tag. Refer to section 7.1 for the procedure and for the mount path.
 
 ## 4. The network and the trust model
 
@@ -365,7 +365,7 @@ services:
   # The shared servers: the database and the cache.
   # ---------------------------------------------------------------------------
   postgres:
-    image: ${POSTGRES_IMAGE:-postgres:16.15-alpine}
+    image: ${POSTGRES_IMAGE:-postgres:18.6-alpine}
     container_name: workspace-postgres
     restart: unless-stopped
     environment:
@@ -377,7 +377,11 @@ services:
       GITEA_DB_PASSWORD: ${GITEA_DB_PASSWORD}
       VIKUNJA_DB_PASSWORD: ${VIKUNJA_DB_PASSWORD}
     volumes:
-      - ${DATA_ROOT:-/opt/workspace}/postgres:/var/lib/postgresql/data
+      # WARNING: Mount the directory at /var/lib/postgresql, not at
+      # /var/lib/postgresql/data. From version 18, the image keeps its data in
+      # /var/lib/postgresql/18/docker. The image does not start if a directory is
+      # mounted at /var/lib/postgresql/data. An empty directory also stops the start.
+      - ${DATA_ROOT:-/opt/workspace}/postgres:/var/lib/postgresql
       # PostgreSQL runs this file only when the data directory is empty. The file
       # makes the roles and the databases.
       - ./init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
@@ -737,7 +741,7 @@ VIKUNJA_PORT=8083
 # 2028-11-09. Version 18 needs a data migration, not a new tag. Refer to DESIGN.md,
 # section 11.
 CADDY_IMAGE=caddy:2.11.4-alpine
-POSTGRES_IMAGE=postgres:16.15-alpine
+POSTGRES_IMAGE=postgres:18.6-alpine
 VALKEY_IMAGE=valkey/valkey:9.1.2-alpine
 GITEA_IMAGE=gitea/gitea:1.27.3
 OUTLINE_IMAGE=outlinewiki/outline:1.10.0
@@ -950,6 +954,11 @@ Do these steps in this sequence:
    image has only version 16 programs. Use a temporary container on the compose network.
    The new `psql` is also necessary for the restore, because a dump from 2026 or later
    contains the commands `\restrict` and `\unrestrict`.
+   WARNING: Do not use the options `--clean` and `--if-exists`. The new cluster is empty and
+   needs no DROP command. With those options the dump contains `DROP ROLE postgres`,
+   `DROP DATABASE postgres` and `DROP DATABASE template1`. Each of those commands fails, and
+   `ON_ERROR_STOP` then stops the restore. The correct command is:
+   `pg_dumpall -h <source> -U postgres > dump.sql`
 4. Stop PostgreSQL with a long time limit: `docker compose stop -t 120 postgres`
 5. WARNING: Do not delete the old data directory. Change its name:
    `mv "$DATA_ROOT/postgres" "$DATA_ROOT/postgres-16.bak"`
@@ -960,10 +969,16 @@ Do these steps in this sequence:
    `role "outline" already exists`. The dump contains the roles, the databases, the
    permissions and the extensions.
 8. Start PostgreSQL: `docker compose up -d postgres`
-9. Restore the dump with the version 18 `psql` and the options `-X -v ON_ERROR_STOP=1`.
-10. Make the statistics again: `vacuumdb --all --analyze-in-stages`. A restore has no
+9. Remove one line from the dump. WARNING: Do not omit this step. Each new cluster already
+   has the role `postgres`, and the dump contains the command `CREATE ROLE postgres`. That
+   command fails and stops the restore.
+   `sed '/^CREATE ROLE postgres;$/d' dump.sql > dump-filtered.sql`
+10. Restore the filtered dump with the version 18 `psql` and the options
+    `-X -v ON_ERROR_STOP=1`. The result must be exit code 0 and no error line.
+11. Make the statistics again: `vacuumdb --all --analyze-in-stages`. A restore has no
     statistics for the query planner.
-11. Put the `init.sql` mount back. Then start the applications.
+12. Put the `init.sql` mount back. Then start the applications. The file does not operate
+    again, because the data directory is not empty.
 
 To go back to version 16, change the tag and the mount to their old values and change the
 name of the old directory back. The old directory is the fastest method to go back.
@@ -1117,6 +1132,23 @@ needs a native Linux daemon.
   `depends_on.condition: service_healthy` operates.
 * The YAML values `!override` and `!reset` operated in the revision 2 override file. That
   file is no longer necessary.
+
+### 9.8 The PostgreSQL migration of 2026-09-08
+
+A test host moved the cluster from version 16.15 to version 18.6 with the procedure in
+section 7.1. The result:
+
+* The version 18 image put its data in `/var/lib/postgresql/18/docker`. The mount is at
+  `/var/lib/postgresql`.
+* Data checksums are on in the new cluster. The version 16 cluster had no checksums.
+* The dump kept each role, each database with its owner, the five extensions in the
+  `outline` database, the Gitea administrator and the two OAuth2 applications. The two
+  client secrets stayed correct, thus no application needed a new secret.
+* The command `REVOKE CONNECT` stays effective. The role `gitea` cannot connect to the
+  database `outline`.
+* Two commands in the first dump stopped the restore. The corrections are in section 7.1,
+  steps 3 and 9. The correct restore gives exit code 0 and no error line.
+* The old data directory stays on the disk with the name `postgres-16.bak`.
 
 ### 9.7 The upgrade of 2026-09-08
 
