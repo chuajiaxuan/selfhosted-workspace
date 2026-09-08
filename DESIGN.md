@@ -1190,7 +1190,30 @@ then Outline.
   the Outline container to Gitea gives 200. There is no x509 error and no error in the log.
 * The memory of the stack went from approximately 540 MB to approximately 690 MB.
 
-### 9.6 Caddy 2.10.2
+### 9.6 Caddy
+
+* **The listener wrapper `http_redirect` operates in the standard image.** The command
+  `caddy list-modules` shows `caddy.listeners.http_redirect` in `caddy:2.11.4-alpine`. An
+  HTTP request to each of the three TLS ports gives the code 308 with the same address and
+  the scheme `https`. The path and the query stay the same. A request that follows the
+  answer gives the code 200.
+* **WARNING: A global `servers` block gives the wrapper to each listener.** If you add a
+  plain-HTTP page on port 80, write one block for each port, for example
+  `servers :8081 { }` and `servers :80 { protocols h1 h2c }`. Without that separation, the
+  page on port 80 answers with a redirect to `https://<address>:80`, and no service listens
+  there.
+* **The wrapper examines only five request methods**: GET, HEAD, POST, PUT and OPTIONS. A
+  plain-HTTP request with a different method gets no answer. A browser is not affected.
+* **The command `caddy validate` stops with a Go panic if the PKI files are absent.** Mount
+  the `certs` directory into the container for that test. The panic is not a fault in the
+  configuration.
+* **No browser corrects this condition.** Chrome does not change HTTP to HTTPS for an IP
+  address or for an address with a port. Firefox has the two options
+  `https_first_for_custom_ports` and `https_first_for_local_addresses`, and both are off.
+  RFC 6797 does not permit HSTS for an IP address. Thus the correction must be on the
+  server.
+
+### 9.6.1 Caddy 2.10.2 (earlier observations)
 
 * The configuration `pki { ca local { root { cert key } } }` operates with an EC root
   certificate from openssl. Caddy made the intermediate certificate "Workspace Root CA - ECC
