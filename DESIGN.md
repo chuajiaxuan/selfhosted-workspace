@@ -671,6 +671,20 @@ services:
 	}
 	servers {
 		protocols h1 h2          # HTTP/3 needs UDP ports. Use only TCP.
+		# A user types an address without a scheme, for example 192.168.1.50:8081.
+		# The browser then makes an HTTP request to a port that gives only HTTPS.
+		# Without the wrapper below, the Go library answers with the error 400 and the
+		# message "Client sent an HTTP request to an HTTPS server". Caddy cannot change
+		# that answer, because it comes before the TLS operation.
+		# The wrapper http_redirect examines the first bytes of the connection. For an
+		# HTTP request it answers with the code 308 and the same address with https. The
+		# port, the path and the query stay the same.
+		# WARNING: Keep this sequence. The name tls shows the position of the TLS
+		# operation in the chain, and http_redirect must come before it.
+		listener_wrappers {
+			http_redirect
+			tls
+		}
 	}
 }
 
