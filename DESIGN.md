@@ -1212,6 +1212,17 @@ then Outline.
   `https_first_for_custom_ports` and `https_first_for_local_addresses`, and both are off.
   RFC 6797 does not permit HSTS for an IP address. Thus the correction must be on the
   server.
+* **A name gives a better result than an IP address, but each client needs a step.** RFC 6797
+  keeps a port that is not 80 and changes only the scheme. Thus HSTS operates for a name.
+  A name also removes the necessity for the option `default_sni`.
+  WARNING: Do not use mDNS and a `.local` name to avoid that step. Windows added mDNS to its
+  new interfaces, and reports show that a `.local` name does not operate in an older Win32
+  program or in the command `ping`. A browser on Windows uses the Win32 interface. Examine
+  this behaviour on your own Windows version before you make a decision.
+  A line in the hosts file of each client is reliable on Linux, macOS and Windows. Add that
+  line at the same time as the root certificate. Refer to section 7, step 8.
+  A name that ends with `.internal` is a good selection. ICANN keeps that name for private
+  use, thus it cannot conflict with a public name.
 
 ### 9.6.1 Caddy 2.10.2 (earlier observations)
 
